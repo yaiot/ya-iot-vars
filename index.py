@@ -371,25 +371,27 @@ def handle_scenario(event, context):
     if event['headers'].get('Content-Type') != 'application/x-www-form-urlencoded':
         raise BadRequest('application/x-www-form-urlencoded expected')
     data = urllib.parse.parse_qs(event['body'])
-    rows = pool.retry_operation_sync(lambda session: session.transaction(ydb.SerializableReadWrite()).execute(
-        'select scenario_id from scenarios where id = {};'.format(data['scenario']),
-        commit_tx=True
-    )[0].rows)
-    error = None
-    if not rows or not rows[0].scenario_id:
-        status_code = 404
-        error = f'{data["scenario"]} not found'
-    else:
-        scenario_id = rows[0].scenario_id
-        response = requests.post(
-            f'https://api.iot.yandex.net/v1.0/scenarios/{scenario_id}/actions',
-            headers = {'Authorization': f'OAuth {OAUTH_TOKEN}'}
-        )
-        status_code = response.status()
-        if status_code != 200:
-            error = response.json()['message']
+    txn = session.transaction(ydb.SerializableReadWrite())
+    rows = txn.execute(
+        'select user_id, scenario_id from scenarios where id = {};'.format(data["scenario"]),
+    )[0].rows
+    if not rows or not rows[0].user_id:
+        raise BadRequest(f'{data["scenario"]} not found', 404)
+    user_id = rows[0].user_id
+    scenario_id = rows[0].scenario_id
+    rows = txn.execute(
+        'select token from tokens where user_id = {};'.format(user_id),
+    )[0].rows
+    if not rows or not rows[0].token:
+        raise BadRequest(f'User with id {user_id} not found', 404)
+    token = rows[0].token
+    response = requests.post(
+        f'https://api.iot.yandex.net/v1.0/scenarios/{scenario_id}/actions',
+        headers = {'Authorization': f'Bearer {token}'}
+    )
+    error = response.json()['message'] if response.status() != 200 else None
     return {
-        'statusCode': status_code,
+        'statusCode': response.status(),
         'body': {
             'error': error
         }
