@@ -96,6 +96,15 @@ def check_auth(event, context) -> int:
     return uid
 
 
+def handle_hook(txn, lamp_id, user_id):
+    rows = txn.execute(
+        'select url from hooks where lamp_id = {} and user_id = {};'.format(lamp_id, user_id),
+    )[0].rows
+    if not rows or not rows[0].url:
+        return
+    requests.get(rows[0].url)
+
+
 def handle_unlink(event, context):
     req_id = event['headers']['request_id']
     uid = check_auth(event, context)
@@ -211,6 +220,8 @@ def handle_action(event, context):
                 for cap in dev['capabilities']:
                     if cap['type'] == 'devices.capabilities.on_off':
                         expressions[set_to] = str(int(cap['state']['value']))
+                        if expressions.get(set_to) != before.get(set_to) and expressions.get(set_to) == '1':
+                            handle_hook(txn, uid, set_to)
                         action_result[key] = dict(status='DONE')
         txn.execute(
             "upsert into users(uid, expressions)"
@@ -356,6 +367,35 @@ def handle_get_vars(event, context):
     }
 
 
+def handle_scenario(event, context):
+    if event['headers'].get('Content-Type') != 'application/x-www-form-urlencoded':
+        raise BadRequest('application/x-www-form-urlencoded expected')
+    data = urllib.parse.parse_qs(event['body'])
+    rows = pool.retry_operation_sync(lambda session: session.transaction(ydb.SerializableReadWrite()).execute(
+        'select scenario_id from scenarios where id = {};'.format(data['scenario']),
+        commit_tx=True
+    )[0].rows)
+    error = None
+    if not rows or not rows[0].scenario_id:
+        status_code = 404
+        error = f'{data["scenario"]} not found'
+    else:
+        scenario_id = rows[0].scenario_id
+        response = requests.post(
+            f'https://api.iot.yandex.net/v1.0/scenarios/{scenario_id}/actions',
+            headers = {'Authorization': f'OAuth {OAUTH_TOKEN}'}
+        )
+        status_code = response.status()
+        if status_code != 200:
+            error = response.json()['message']
+    return {
+        'statusCode': status_code,
+        'body': {
+            'error': error
+        }
+    }
+
+
 def handler(event, context):
     if 'request_type' in event:
         print('payload', event.get('payload'))
@@ -387,6 +427,8 @@ def handler(event, context):
                     return handle_set_var(event, context, patch=False)
                 elif event['httpMethod'] == 'GET':
                     return handle_get_vars(event, context)
+            elif event['queryStringParameters'].get('scenario'):
+                return handle_scenario(event, context)
             elif event['queryStringParameters'].get('auth'):
                 return {
                     'statusCode': 200,

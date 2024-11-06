@@ -50,6 +50,10 @@
         --data-urlencode 'Name=x' \
         -H 'X-Auth-Token: <Token>'
    ```
+* Выполнить сценарий умного дома
+   ```shell
+   curl https://functions.yandexcloud.net/d4eu1j29elvh2n4o6rkv?scenario=<Gid>
+   ```
 
 Также доступен пользовательский интерфейс!
 
